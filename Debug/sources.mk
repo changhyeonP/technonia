@@ -62,6 +62,7 @@ ra/fsp/src/bsp/mcu/all \
 ra/fsp/src/bsp/mcu/ra8p1 \
 ra/fsp/src/r_dtc \
 ra/fsp/src/r_gpt \
+ra/fsp/src/r_icu \
 ra/fsp/src/r_iic_master \
 ra/fsp/src/r_ioport \
 ra/fsp/src/r_ssi \

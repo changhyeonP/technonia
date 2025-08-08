@@ -2,915 +2,440 @@
  * File Name    : ssi_ep.c
  * Description  : Contains data structures and functions used in ssi_ep.c.
  **********************************************************************************************************************/
-/***********************************************************************************************************************
-* Copyright (c) 2020 - 2025 Renesas Electronics Corporation and/or its affiliates
-*
-* SPDX-License-Identifier: BSD-3-Clause
-***********************************************************************************************************************/
+/***********************************************************************************************************************/
 
+#include "hal_data.h"
+#include "common_utils.h"
 #include "ssi_ep.h"
 #include "da7212.h"
+#include <math.h>
 
-/* Private functions */
-static void ssi_example_calculate_samples(uint32_t buffer_index);
-static void ssi_example_write();
-static void deinit_gpt(void);
-static void deinit_ssi(void);
+/* --- Private Function Prototypes --- */
+void da7212_init(void);
+void da7212_write(uint8_t reg, uint8_t data);
+static uint8_t da7212_read(uint8_t reg);
+static bool da7212_verify_registers(void); // ⭐️ 레지스터 검증 함수 선언
+static void audio_data_transfer(void);
+static void audio_data_calculate(uint32_t buffer_index);
+
+/* --- Global Variables --- */
+static volatile i2c_master_event_t g_i2c_callback_event;
+//static volatile i2s_event_t g_i2s_event = I2S_EVENT_TX_EMPTY;
+static volatile uint8_t g_buffer_index = 0;
+static int32_t g_src_buff[2][256];
+static volatile bool g_play_button_pressed = false;
+static volatile bool g_stop_button_pressed = false;
+
+// 1. 재생할 음들의 주파수 (Hz) 정의
+#define HIGH_NOTE_FREQ 880  // 높은 '라'
+#define LOW_NOTE_FREQ  440  // 중간 '라'
+
+// 2. 멜로디 순서 정의 (높은 라 -> 낮은 라 -> 높은 라 -> 낮은 라)
+const uint32_t g_song_melody[] = {HIGH_NOTE_FREQ, LOW_NOTE_FREQ, HIGH_NOTE_FREQ, LOW_NOTE_FREQ};
+
+// 3. 멜로디에 총 몇 개의 음이 있는지 자동으로 계산
+const uint32_t g_total_notes_in_song = sizeof(g_song_melody) / sizeof(g_song_melody[0]);
+
+// 4. 하나의 음을 몇 초 동안 연주할지, 샘플레이트는 몇인지 정의
+#define NOTE_DURATION_SECONDS 0.5f
+#define SAMPLE_RATE 48000
+const uint32_t g_samples_per_note = (uint32_t)(NOTE_DURATION_SECONDS * SAMPLE_RATE);
+
+// =========================================================================
+// 현재 연주 상태 저장 (Performance State)
+// =========================================================================
+static uint32_t g_current_note_index = 0;      // 현재 멜로디의 몇 번째 음을 연주 중인가?
+static uint32_t g_samples_played_for_note = 0; // 현재 음을 몇 개의 샘플 동안 연주했는가?
+
+bsp_io_level_t led_level = BSP_IO_LEVEL_LOW; // LED 상태를 기억할 변수
+
+void switch_callback1(external_irq_callback_args_t *p_args); // 1번 스위치 콜백 함수 선언
+void switch_callback2(external_irq_callback_args_t *p_args); // 2번 스위치 콜백 함수 선언
+
 
 /*******************************************************************************************************************//**
- * @addtogroup SSI_EP
- * @{
+ * Main entry function.
  **********************************************************************************************************************/
-
-/* Global variables */
-volatile i2s_event_t g_i2s_event       = I2S_EVENT_TX_EMPTY;  /* An actual event updates in callback */
-volatile bool g_send_data_in_main_loop = true;
-volatile bool g_data_ready             = false;
-volatile uint8_t g_buffer_index        = 0;
-
-/* Destination buffer to receive the sample audio data */
-uint8_t g_dest_buff[BUFF_SIZE] = {RESET_VALUE};
-
-/* Source buffer to transmit the sample audio data */
-int32_t g_src_buff[2][SSI_STREAMING_EXAMPLE_SAMPLES_PER_CHUNK];
-
-void da7212_write(uint8_t reg, uint8_t data);
-void da7212_init(void);
-
-
-
-
-
-
-
-
-
-
-/***********************************************************************************************************************
- * The RA Configuration tool generates main() and uses it to generate threads if an RTOS is used. This function is
- * called by main() when no RTOS is used.
- **********************************************************************************************************************/
-uint8_t data_read_from_reg[8] = {0,};  // 읽은 값을 저장할 변수 (초기값은 0으로)
 void ssi_entry(void)
 {
+    fsp_err_t err;
 
-    fsp_err_t err = FSP_SUCCESS;
-        uint8_t reg[2];
-        uint8_t read_value = 0;
+    R_BSP_PinAccessEnable();
 
-        APP_PRINT("\r\n--- Audio Speaker Example Start ---\r\n");
+    APP_PRINT("\r\n--- DA7212 Audio Codec Speaker Example ---\r\n");
 
-        /* ========================================================================= */
-        /* 1. I2C 드라이버 초기화                                                    */
-        /* ========================================================================= */
-        R_IIC_MASTER_CallbackSet(&g_i2c_master0_ctrl, i2c_callback, NULL, NULL);
-        err = R_IIC_MASTER_Open(&g_i2c_master0_ctrl, &g_i2c_master0_cfg);
-        if (FSP_SUCCESS != err)
-        {
-            APP_ERR_PRINT("\r\nI2C Open Failed.\r\n");
-            APP_ERR_TRAP(err);
-        }
-        APP_PRINT("I2C Open Success.\n");
-
-        /* ========================================================================= */
-        /* 2. DA7212 오디오 코덱 초기화 (I2C를 통해 레지스터 설정)                 */
-        /* ========================================================================= */
-        APP_PRINT("DA7212 Codec Configuration Start...\n");
-
-
-        // 1. 시스템 활성화
-        uint8_t target_reg_addr = 0xFD;  // 테스트할 레지스터 주소
-        uint8_t value_to_write = 0x01;   // 쓰려는 값
-//        uint8_t data_read_from_reg[8] = {0,};  // 읽은 값을 저장할 변수 (초기값은 0으로)
-
-        uint8_t write_buffer[8];
-        write_buffer[0] = target_reg_addr;
-        write_buffer[1] = value_to_write;
-
-        APP_PRINT("Testing Register 0x%X...\n", target_reg_addr);
-
-        // Step 1: 먼저 레지스터에 값을 쓴다.
-        err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, write_buffer, 2, false);
-        if (FSP_SUCCESS != err)
-        {
-            APP_PRINT(" -> Write Failed.\n");
-        }
-        else
-        {
-            R_BSP_SoftwareDelay(40, BSP_DELAY_UNITS_MILLISECONDS); // 쓰기 후 안정화 대기
-
-            // Step 2: 이제 해당 레지스터의 값을 읽어온다.
-            // Step 2a: 읽을 레지스터의 주소를 먼저 알려준다.
-//            err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &target_reg_addr, 1, true);
-
-            err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, data_read_from_reg, 8, false);
-
-//            for(uint8_t i=0; i<8; i++){
-//                APP_PRINT(" -> Write/Read1 SUCCESS! Value: 0x%X\n", data_read_from_reg[i]);
-//            }
-
-//            // Step 2b: 주소를 보낸 직후, 데이터를 읽어온다.
-//            if (FSP_SUCCESS == err)
-//            {
-//                err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, data_read_from_reg, 8, false);
-//            }
-//
-//            // Step 3: 결과를 확인한다.
-//            if (FSP_SUCCESS == err)
-//            {
-//
-//                for(uint8_t i=0; i<8; i++){
-//                    APP_PRINT(" -> Write/Read1 SUCCESS! Value: 0x%X\n", data_read_from_reg[i]);
-//                }
-//
-//            }
-//            else
-//            {
-//                APP_PRINT(" -> Read1 Transaction Failed.\n");
-//            }
-        }
-
-
-
-
-//        reg[0] = 0xFD; reg[1] = 0x01; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false); R_BSP_SoftwareDelay(40, BSP_DELAY_UNITS_MILLISECONDS);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                        // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                        R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                        // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                        // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                        err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                        // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                        if (FSP_SUCCESS == err)
-//                                        {
-//                                            err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                        }
-//
-//                                        // Step 3: 쓴 값과 읽은 값 비교하기
-//                                        if (FSP_SUCCESS == err)
-//                                        {
-//                                            if (reg[1] == read_value)
-//                                            {
-//                                                APP_PRINT("\r\n num1 Write/Read Success! Value: 0x%X\n", read_value);
-//                                            }
-//                                            else
-//                                            {
-//                                                APP_PRINT("\r\n num1 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                            }
-//                                        }
-//                                        else
-//                                        {
-//                                            APP_PRINT("\r\n num1 Read transaction failed.\r\n");
-//                                        }
-
-        // 2. 마스터 바이어스 활성화
-//        reg[0] = 0x23; reg[1] = 0x08; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false); R_BSP_SoftwareDelay(25, BSP_DELAY_UNITS_MILLISECONDS);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                        // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                        R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                        // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                        // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                        err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                        // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                        if (FSP_SUCCESS == err)
-//                                        {
-//                                            err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                        }
-//
-//                                        // Step 3: 쓴 값과 읽은 값 비교하기
-//                                        if (FSP_SUCCESS == err)
-//                                        {
-//                                            if (reg[1] == read_value)
-//                                            {
-//                                                APP_PRINT("\r\n num2 Write/Read Success! Value: 0x%X\n", read_value);
-//                                            }
-//                                            else
-//                                            {
-//                                                APP_PRINT("\r\n num2 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                            }
-//                                        }
-//                                        else
-//                                        {
-//                                            APP_PRINT("\r\n num2 Read transaction failed.\r\n");
-//                                        }
-//
-//
-//        // 3. 샘플레이트 설정 (48kHz)
-//        reg[0] = 0x22; reg[1] = 0x0B; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                        // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                        R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                        // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                        // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                        err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                        // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                        if (FSP_SUCCESS == err)
-//                                        {
-//                                            err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                        }
-//
-//                                        // Step 3: 쓴 값과 읽은 값 비교하기
-//                                        if (FSP_SUCCESS == err)
-//                                        {
-//                                            if (reg[1] == read_value)
-//                                            {
-//                                                APP_PRINT("\r\n num3 Write/Read Success! Value: 0x%X\n", read_value);
-//                                            }
-//                                            else
-//                                            {
-//                                                APP_PRINT("\r\n num3 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                            }
-//                                        }
-//                                        else
-//                                        {
-//                                            APP_PRINT("\r\n num3 Read transaction failed.\r\n");
-//                                        }
-//
-//
-//        // 4. PLL 설정
-//        reg[0] = 0x27; reg[1] = 0x84; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num4-1 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num4-1 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num4-1 Read transaction failed.\r\n");
-//                                }
-//
-//        reg[0] = 0x24; reg[1] = 0x07; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num4-2 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num4-2 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num4-2 Read transaction failed.\r\n");
-//                                }
-//
-//        reg[0] = 0x25; reg[1] = 0xEA; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num4-3 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num4-3 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num4-3 Read transaction failed.\r\n");
-//                                }
-//
-//        reg[0] = 0x26; reg[1] = 0x1E; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num4-4 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num4-4 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num4-4 Read transaction failed.\r\n");
-//                                }
-//
-//
-//        // 5. DAI 클록 모드 설정
-//        reg[0] = 0x28; reg[1] = 0x01; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num5 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num5 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num5 Read transaction failed.\r\n");
-//                                }
-//
-//
-//        // 6. DAI 제어 설정
-//        reg[0] = 0x29; reg[1] = 0xC4; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num6 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num6 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num6 Read transaction failed.\r\n");
-//                                }
-//
-//
-//        // 7. DAC 라우팅 설정
-//        reg[0] = 0x2A; reg[1] = 0x22; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num7 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num7 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num7 Read transaction failed.\r\n");
-//                                }
-//
-//
-//        // 8. 차지펌프 설정
-//        reg[0] = 0x47; reg[1] = 0xA1; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num8 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num8 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num8 Read transaction failed.\r\n");
-//                                }
-//
-//
-//        // 9. 스피커 출력 믹서 설정
-//        reg[0] = 0x4B; reg[1] = 0x08; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num9-1 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num9-1 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num9-1 Read transaction failed.\r\n");
-//                                }
-//
-//        reg[0] = 0x4C; reg[1] = 0x08; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num9-2 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num9-2 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num9-2 Read transaction failed.\r\n");
-//                                }
-//
-//
-//        // 10. 라인 앰프 (스피커) 게인 설정 -- 여기가 볼륨 조절 부분입니다.
-//        reg[0] = 0x4A; reg[1] = 0x30; // 현재 +6dB, 최댓값은 0x3F(+21dB)
-//        R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//        // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//        R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//        // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                        // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                        err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                        // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                        if (FSP_SUCCESS == err)
-//                        {
-//                            err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                        }
-//
-//                        // Step 3: 쓴 값과 읽은 값 비교하기
-//                        if (FSP_SUCCESS == err)
-//                        {
-//                            if (reg[1] == read_value)
-//                            {
-//                                APP_PRINT("\r\n num10 Write/Read Success! Value: 0x%X\n", read_value);
-//                            }
-//                            else
-//                            {
-//                                APP_PRINT("\r\n num10 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                            }
-//                        }
-//                        else
-//                        {
-//                            APP_PRINT("\r\n num10 Read transaction failed.\r\n");
-//                        }
-//
-//
-//        // 11. 라인 앰프 활성화
-//        reg[0] = 0x6D; reg[1] = 0x80; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                                }
-//
-//                                // Step 3: 쓴 값과 읽은 값 비교하기
-//                                if (FSP_SUCCESS == err)
-//                                {
-//                                    if (reg[1] == read_value)
-//                                    {
-//                                        APP_PRINT("\r\n num11 Write/Read Success! Value: 0x%X\n", read_value);
-//                                    }
-//                                    else
-//                                    {
-//                                        APP_PRINT("\r\n num11 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                                    }
-//                                }
-//                                else
-//                                {
-//                                    APP_PRINT("\r\n num11 Read transaction failed.\r\n");
-//                                }
-//
-//
-//
-//        // 12. 시스템 컨트롤러로 전체 활성화
-//        reg[0] = 0x51; reg[1] = 0xD9; R_IIC_MASTER_Write(&g_i2c_master0_ctrl, reg, 2, false);
-//
-//        // 🚨 방금 쓴 레지스터의 값을 다시 읽어오기
-//                // 먼저 읽을 주소를 알려주고(Write), 그 다음 값을 읽어옵니다(Read).
-//                R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
-//                // --- 🚨 여기서부터가 수정된 부분입니다 ---
-//
-//                // Step 1: 읽고 싶은 레지스터의 주소를 먼저 알려준다 (Write).
-//                // 마지막 파라미터 'true'는 통신을 끝내지 않고 유지하라는 의미(restart).
-//                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg[0], 1, true);
-//
-//                // Step 2: 주소를 알려준 직후, 해당 레지스터에서 데이터를 읽어온다 (Read).
-//                if (FSP_SUCCESS == err)
-//                {
-//                    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_value, 1, false);
-//                }
-//
-//                // Step 3: 쓴 값과 읽은 값 비교하기
-//                if (FSP_SUCCESS == err)
-//                {
-//                    if (reg[1] == read_value)
-//                    {
-//                        APP_PRINT("\r\n num12 Write/Read Success! Value: 0x%X\n", read_value);
-//                    }
-//                    else
-//                    {
-//                        APP_PRINT("\r\n num12 Write/Read FAILED! Wrote: 0x%X, Read: 0x%X\n", reg[1], read_value);
-//                    }
-//                }
-//                else
-//                {
-//                    APP_PRINT("\r\n num12 Read transaction failed.\r\n");
-//                }
-//
-//                target_reg_addr = 0x03;
-//                err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &target_reg_addr, 1, true);
-//
-//                err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, data_read_from_reg, 8, false);
-//
-//                for(uint8_t i=0; i<8; i++){
-//                    APP_PRINT(" -> Write/Read1 SUCCESS! Value: 0x%X\n", data_read_from_reg[i]);
-//                }
-//
-//        // 13. 안정화 대기
-//        R_BSP_SoftwareDelay(250, BSP_DELAY_UNITS_MILLISECONDS);
-//        APP_PRINT("DA7212 Codec Configuration Complete.\n");
-//
-//
-        /* ========================================================================= */
-        /* 3. SSI(I2S) 및 GPT(타이머) 초기화 및 시작                             */
-        /* ========================================================================= */
-        err = R_SSI_Open(&g_i2s_ctrl, &g_i2s_cfg);
-        if (FSP_SUCCESS != err)
-        {
-            APP_ERR_PRINT("\r\nSSI Open Failed.\r\n");
-            APP_ERR_TRAP(err);
-        }
-
-        err = R_GPT_Open(&g_timer_ctrl, &g_timer_cfg);
-        if (FSP_SUCCESS != err)
-        {
-            APP_ERR_PRINT("\r\nGPT Open Failed.\r\n");
-            APP_ERR_TRAP(err);
-        }
-
-        err = R_GPT_Start(&g_timer_ctrl);
-        if (FSP_SUCCESS != err)
-        {
-            APP_ERR_PRINT("\r\nGPT Start Failed.\r\n");
-            APP_ERR_TRAP(err);
-        }
-        APP_PRINT("SSI and GPT Started.\n");
-
-
-        /* ========================================================================= */
-        /* 4. 오디오 데이터 준비 및 첫 전송 시작                                   */
-        /* ======================================================================*/
-        ssi_example_calculate_samples(!g_buffer_index);
-
-        ssi_example_write(); // 첫 데이터 전송 시작!
-        APP_PRINT("\r\nFirst audio frame sent. Entering main loop.\n");
-
-        /* ========================================================================= */
-        /* 5. 메인 루프 진입 (필수!!!)                                             */
-        /* ========================================================================= */
-        while (1)
-        {
-            // 백그라운드에서 인터럽트가 오디오 출력을 처리하는 동안
-            // 메인 루프는 여기서 안정적으로 대기합니다.
-            __WFI();
-        }
-
-
-
-
-
-
-}
-
-/***********************************************************************************************************************
- *  @brief      This function generates stereo audio samples in the form of a sine wave and stores them into 2 buffers
- *              for later transmission.
- *  @param[IN]  buffer_index
- *  @retval     None
- **********************************************************************************************************************/
-static void ssi_example_calculate_samples(uint32_t buffer_index)
-{
-    uint32_t pclkd_get_hz = R_FSP_SystemClockHzGet (FSP_PRIV_CLOCK_PCLKD); /* PCLKD clock (GPT clock) */
-    uint32_t period = pclkd_get_hz / g_timer_cfg.period_counts;
-
-    /* Audio sample frequency (bit_clock (Hz) = sampling_frequency (Hz) * channels * system_word_bits
-     * (the bit clock for transmitting 2 channels of 16-bit data),
-     * audio_clock (Hz) = desired_bit_clock (Hz) * bit_clock_divider) */
-    uint32_t audio_sample = (period / (2 * 2 * 16));
-
-    static uint32_t t = 0U;
-    /* Create a stereo sine wave. Using formula sample = sin(2 * pi * tone_frequency * t / sampling_frequency) */
-    uint32_t freq = SSI_STREAMING_EXAMPLE_TONE_FREQUENCY_HZ;
-    for (uint32_t i = 0; i < SSI_STREAMING_EXAMPLE_SAMPLES_PER_CHUNK / 2; i += 1)
+    /* 1. I2C 드라이버 초기화 */
+    R_IIC_MASTER_CallbackSet(&g_i2c_master0_ctrl, i2c_callback, NULL, NULL);
+    err = R_IIC_MASTER_Open(&g_i2c_master0_ctrl, &g_i2c_master0_cfg);
+    if (FSP_SUCCESS != err)
     {
-        float input = (float) ((2.0f * M_PI * freq * t) / (audio_sample));
-        t++;
-        /* Store sample twice, once for left channel and once for right channel */
-        int16_t sample = (int16_t) ((INT16_MAX * sinf (input)));
-        int32_t sample_32bit = (int32_t)(sample << 8);
-
-        g_src_buff[buffer_index][2 * i] = sample_32bit;
-        g_src_buff[buffer_index][2 * i + 1] = sample_32bit;
+        APP_PRINT("I2C Open Failed.\r\n");
+        APP_ERR_TRAP(err);
     }
-    /* Data is ready to be sent in the interrupt */
-    g_data_ready = true;
-}
+    APP_PRINT("I2C Bus Opened Successfully.\n");
 
-/***********************************************************************************************************************
- *  @brief      This function is responsible for transferring data between two buffers
- *              (source buffer and destination buffer).
- *  @param[IN]  None
- *  @retval     None
- **********************************************************************************************************************/
-static void ssi_example_write()
-{
-    /* Setting g_dest_buff to zero */
-    memset(g_dest_buff, 0, sizeof(g_dest_buff));
+    /* 2. DA7212 코덱 초기화 */
+    da7212_init();
+    APP_PRINT("DA7212 Codec Initialized.\n");
 
-    /* Transfer data. This call is non-blocking */
-    fsp_err_t err = R_SSI_Write(&g_i2s_ctrl,\
-                                    (uint8_t *)g_src_buff[g_buffer_index],\
-                                    SSI_STREAMING_EXAMPLE_SAMPLES_PER_CHUNK * sizeof(int32_t));
-    if (FSP_SUCCESS == err)
+    /* ⭐️ ========================================================================= */
+    /* ⭐️ 3. 레지스터 값 읽기 및 검증 (새로 추가된 부분)                         */
+    /* ⭐️ ========================================================================= */
+    if (da7212_verify_registers())
     {
-        /* Switch the buffer after data is sent */
-        g_buffer_index = !g_buffer_index;
-        /* Allow loop to calculate next buffer only if transmission was successful. Clear flag. */
-        g_data_ready = false;
-        APP_PRINT("\r\nSEND FINISH");
+        APP_PRINT(" -> All registers verified successfully!\n");
     }
     else
     {
-        /* Handle error */
-        APP_ERR_PRINT("\r\nR_SSI_WriteRead API failed, Closing SSI and GPT\r\n");
-        deinit_ssi();
-        deinit_gpt();
-        /* Trap here */
-        APP_ERR_TRAP(err);
-        /* Getting here most likely means a transmit overflow occurred before the  transmit buffer could be reloaded
-         * The application must wait until the SSI is idle, then restart transmission
-         * In this example, the idle callback transmits data or resets the flag g_send_data_in_main_loop */
+        APP_PRINT(" -> Register verification FAILED. Halting.\n");
+//        APP_ERR_TRAP(FSP_ERR_ASSERTION);
     }
-  }
 
-/***********************************************************************************************************************
- *  @brief      This function gets SSI events
- *  @param[IN]  p_args
- *  @retval     None
+    /* 4. SSI(I2S) 및 GPT(타이머) 초기화 */
+    err = R_SSI_Open(&g_i2s_ctrl, &g_i2s_cfg);
+    if (FSP_SUCCESS != err) { APP_PRINT("SSI Open Failed.\n"); APP_ERR_TRAP(err); }
+
+    err = R_GPT_Open(&g_timer_ctrl, &g_timer_cfg);
+    if (FSP_SUCCESS != err) { APP_PRINT("GPT Open Failed.\n"); APP_ERR_TRAP(err); }
+
+    err = R_GPT_Start(&g_timer_ctrl);
+    if (FSP_SUCCESS != err) { APP_PRINT("GPT Start Failed.\n"); APP_ERR_TRAP(err); }
+    APP_PRINT("SSI and GPT Started.\n");
+
+
+    APP_PRINT("System Initialized. Waiting for button press...\n");
+    APP_PRINT("Press SW1 to Play, SW2 to Stop.\n");
+
+    err = R_ICU_ExternalIrqOpen(&g_external_irq0_ctrl, &g_external_irq0_cfg);
+    if (FSP_SUCCESS != err) { APP_ERR_TRAP(err); }
+    err = R_ICU_ExternalIrqEnable(&g_external_irq0_ctrl);
+    if (FSP_SUCCESS != err) { APP_ERR_TRAP(err); }
+
+    err = R_ICU_ExternalIrqOpen(&g_external_irq1_ctrl, &g_external_irq1_cfg);
+    if (FSP_SUCCESS != err) { APP_ERR_TRAP(err); }
+    err = R_ICU_ExternalIrqEnable(&g_external_irq1_ctrl);
+    if (FSP_SUCCESS != err) { APP_ERR_TRAP(err); }
+
+    while (1){
+        // 1번 스위치(재생)가 눌렸는지 확인
+        if (g_play_button_pressed)
+        {
+            g_play_button_pressed = false; // 깃발을 내린다
+
+            APP_PRINT("SW1 Pressed: Starting Playback...\n");
+
+            // 오디오 버퍼를 채우고 첫 전송을 시작
+            audio_data_calculate(0);
+            audio_data_calculate(1);
+            audio_data_transfer();
+
+            // I2S 콜백(자동화 파이프라인)을 활성화!
+            R_SSI_CallbackSet(&g_i2s_ctrl, i2s_callback, NULL, NULL);
+        }
+
+        // 2번 스위치(정지)가 눌렸는지 확인
+        if (g_stop_button_pressed)
+        {
+            g_stop_button_pressed = false; // 깃발을 내린다
+
+            APP_PRINT("SW2 Pressed: Stopping Playback...\n");
+
+            // I2S 콜백을 비활성화하여 자동화 파이프라인을 멈춘다!
+            R_SSI_CallbackSet(&g_i2s_ctrl, NULL, NULL, NULL);
+
+            // (선택사항) 더 확실한 정지를 위해 코덱 앰프를 음소거(Mute)
+            // da7212_write(0x6F, 0x58); // Mute, Gain -9dB
+        }
+    }
+
+
+
+
+
+
+
+
+//    /* 5. 오디오 데이터 준비 및 첫 전송 시작 */
+//    audio_data_calculate(0);
+//    audio_data_calculate(1);
+//    audio_data_transfer();
+//    APP_PRINT("Audio streaming started. Entering main loop...\n");
+
+}
+
+/*******************************************************************************************************************//**
+ * 1번 스위치 (재생) 콜백 함수
  **********************************************************************************************************************/
+void switch_callback1(external_irq_callback_args_t *p_args)
+{
+    FSP_PARAMETER_NOT_USED(p_args);
+    g_play_button_pressed = true; // '재생' 깃발을 올린다!
+}
+
+/*******************************************************************************************************************//**
+ * 2번 스위치 (정지) 콜백 함수
+ **********************************************************************************************************************/
+void switch_callback2(external_irq_callback_args_t *p_args)
+{
+    FSP_PARAMETER_NOT_USED(p_args);
+    g_stop_button_pressed = true; // '정지' 깃발을 올린다!
+}
+
+/* (i2c_callback, i2s_callback 함수는 이전과 동일) */
+void i2c_callback(i2c_master_callback_args_t *p_args){ g_i2c_callback_event = p_args->event; }
 void i2s_callback(i2s_callback_args_t *p_args)
 {
-    if( NULL != p_args)
-    {
-        /* Capture callback event for validating the i2s transfer event */
-        g_i2s_event = p_args->event;
-    }
-    /* Reload the transmit buffer if we hit the transmit water mark or restart transmission if the SSI is idle
-     * because it was stopped after a transmit buffer overflow */
-        if ((I2S_EVENT_TX_EMPTY == p_args->event) || (I2S_EVENT_IDLE == p_args->event))
-    {
-            if (g_data_ready)
-            {
-                /* Reload the transmit buffer and handle errors */
-                ssi_example_write();
-            }
-            else
-            {
-                /* Data was not ready yet, send it in the main loop */
-                g_send_data_in_main_loop = true;
-            }
-     }
-
-}
-
-//typedef enum e_i2c_master_event
-//{
-//    I2C_MASTER_EVENT_ABORTED     = 1,  ///< A transfer was aborted
-//    I2C_MASTER_EVENT_RX_COMPLETE = 2,  ///< A receive operation was completed successfully
-//    I2C_MASTER_EVENT_TX_COMPLETE = 3,  ///< A transmit operation was completed successfully
-//    I2C_MASTER_EVENT_START       = 4,  ///< I2C sent a start condition
-//    I2C_MASTER_EVENT_BYTE_ACK    = 5,  ///< I2C finished sending/receiving 1 data byte
-//} i2c_master_event_t;
-
-
-void i2c_callback(i2c_master_callback_args_t *p_args)
-{
-//    FSP_PARAMETER_NOT_USED(p_args);
-    i2c_master_event_t g_i2c_callback_event = p_args->event;
-
-    switch(g_i2c_callback_event){
-        case I2C_MASTER_EVENT_ABORTED:
-            APP_PRINT("\r\n I2C_MASTER_EVENT_ABORTED");
-            break;
-        case I2C_MASTER_EVENT_RX_COMPLETE:
-            APP_PRINT("\r\n I2C_MASTER_EVENT_RX_COMPLETE");
-            for(uint8_t i=0; i<8; i++){
-                  APP_PRINT(" -> Write/Read1 SUCCESS! Value: 0x%X\n", data_read_from_reg[i]);
-            }
-            break;
-        case I2C_MASTER_EVENT_TX_COMPLETE:
-            APP_PRINT("\r\n I2C_MASTER_EVENT_TX_COMPLETE");
-            break;
-        case I2C_MASTER_EVENT_START:
-            APP_PRINT("\r\n I2C_MASTER_EVENT_START");
-            break;
-        case I2C_MASTER_EVENT_BYTE_ACK:
-            APP_PRINT("\r\n I2C_MASTER_EVENT_BYTE_ACK");
-            break;
-        default:
-            APP_PRINT("\r\n I2C_MASTER_EVENT_unknown");
-            break;
-
+    if (I2S_EVENT_TX_EMPTY == p_args->event) {
+//        APP_PRINT("\nI2S_EVENT_TX_EMPTY audio_data_transfer()");
+        audio_data_transfer();
     }
 }
 
 
-
-
-/***********************************************************************************************************************
- *  @brief      This function is used to close SSI module.
- *  @param[IN]  None
- *  @retval     None
+/*******************************************************************************************************************//**
+ * DA7212 코덱 초기화 (올바른 순서 적용)
  **********************************************************************************************************************/
-static void deinit_ssi(void)
+void da7212_init(void)
 {
-    fsp_err_t err = FSP_SUCCESS;
-    /* Close SSI Module */
-    err = R_SSI_Close(&g_i2s_ctrl);
-    /* Handle error */
+    da7212_write(0x1D, 0x80);
+    da7212_write(0xFD, 0x01); R_BSP_SoftwareDelay(40, BSP_DELAY_UNITS_MILLISECONDS);
+    da7212_write(0x90, 0x90);
+    da7212_write(0x23, 0x08); R_BSP_SoftwareDelay(25, BSP_DELAY_UNITS_MILLISECONDS);
+    da7212_write(0x24, 0x00);
+    da7212_write(0x25, 0x00);
+    da7212_write(0x26, 0x20);
+    da7212_write(0x27, 0x84);
+
+    da7212_write(0x22, 0x0B);
+    da7212_write(0x28, 0x02);
+    da7212_write(0x29, 0xC8);
+    da7212_write(0x2A, 0x22);
+    da7212_write(0x47, 0xA1);
+    da7212_write(0x4B, 0x08);
+    da7212_write(0x4C, 0x08);
+    da7212_write(0x6E, 0x98);
+    da7212_write(0x6F, 0x98);
+    da7212_write(0x4A, 0xB8);   //음향조절? 0X98 ~ 0xBF
+    da7212_write(0x51, 0xF1);
+//    da7212_write(0x4A, 0x30); 해드폰 잭 경로의 출력 조절?
+//    da7212_write(0x6D, 0xA8); 스피커가 아닌 해드폰 앰프?
+
+    R_BSP_SoftwareDelay(250, BSP_DELAY_UNITS_MILLISECONDS);
+}
+
+/*******************************************************************************************************************//**
+ * ⭐️ 레지스터 검증 함수 (새로 추가)
+ **********************************************************************************************************************/
+static bool da7212_verify_registers(void)
+{
+    bool success = true;
+    uint8_t read_val;
+
+    // 검증할 레지스터와 기대값 목록
+    const struct { uint8_t reg; uint8_t expected_val; } reg_map[] = {
+        {0xFD, 0x01}, {0x23, 0x08}, {0x24, 0x00}, {0x25, 0x00}, {0x26, 0x20}, {0x27, 0x84}, {0x22, 0x0B}, {0x28, 0x02},
+        {0x29, 0xC8}, {0x2A, 0x22}, {0x47, 0xA1},  {0x4B, 0x08}, {0x4C, 0x08}, {0x6E, 0x98}, {0x6F, 0x98}, {0x51, 0xF1}
+    };
+
+    APP_PRINT("\nVerifying DA7212 Registers...\n");
+    APP_PRINT("=================================================\n");
+    APP_PRINT("| Register | Expected Value | Read Value | Result |\n");
+    APP_PRINT("-------------------------------------------------\n");
+
+    for(uint32_t i = 0; i < sizeof(reg_map)/sizeof(reg_map[0]); i++)
+    {
+        read_val = da7212_read(reg_map[i].reg);
+        bool match = (read_val == reg_map[i].expected_val);
+        APP_PRINT("|   0x%02X   |      0x%02X      |    0x%02X    |  %s  |\n",
+                  reg_map[i].reg, reg_map[i].expected_val, read_val, match ? "PASS" : "FAIL");
+        if (!match)
+        {
+            success = false;
+        }
+    }
+    APP_PRINT("=================================================\n");
+    return success;
+}
+
+
+/*******************************************************************************************************************//**
+ * DA7212 레지스터 쓰기 헬퍼 함수
+ **********************************************************************************************************************/
+void da7212_write(uint8_t reg, uint8_t data)
+{
+    fsp_err_t err;
+    uint32_t timeout_ms;
+    uint8_t buf[2] = {reg, data};
+
+    g_i2c_callback_event = (i2c_master_event_t)0;
+    err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, buf, 2, false);
+    if (FSP_SUCCESS != err) { APP_PRINT("I2C Write Cmd Err for Reg 0x%02X\n", reg); return; }
+
+    timeout_ms = 100;
+    while ((I2C_MASTER_EVENT_TX_COMPLETE != g_i2c_callback_event) && (I2C_MASTER_EVENT_ABORTED != g_i2c_callback_event) && timeout_ms)
+    {
+        R_BSP_SoftwareDelay(40, BSP_DELAY_UNITS_MILLISECONDS);
+        timeout_ms--;
+    }
+    if(I2C_MASTER_EVENT_TX_COMPLETE != g_i2c_callback_event) {APP_PRINT("I2C Write Failed for Reg 0x%02X\n", reg);}
+}
+
+/*******************************************************************************************************************//**
+ * DA7212 레지스터 읽기 헬퍼 함수
+ **********************************************************************************************************************/
+uint8_t da7212_read(uint8_t reg)
+{
+    fsp_err_t err;
+    uint32_t  timeout_ms;
+    uint8_t   read_val = 0xFF;
+
+    g_i2c_callback_event = (i2c_master_event_t)0;
+    err = R_IIC_MASTER_Write(&g_i2c_master0_ctrl, &reg, 1, true);
+    if(FSP_SUCCESS != err) { return read_val; }
+    timeout_ms = 100;
+    while ((I2C_MASTER_EVENT_TX_COMPLETE != g_i2c_callback_event) && (I2C_MASTER_EVENT_ABORTED != g_i2c_callback_event) && timeout_ms)
+    {
+         R_BSP_SoftwareDelay(40, BSP_DELAY_UNITS_MILLISECONDS);
+         timeout_ms--;
+    }
+    if (I2C_MASTER_EVENT_TX_COMPLETE != g_i2c_callback_event) { return read_val; }
+
+    g_i2c_callback_event = (i2c_master_event_t)0;
+    err = R_IIC_MASTER_Read(&g_i2c_master0_ctrl, &read_val, 1, false);
+    if(FSP_SUCCESS != err) { return 0xFF; }
+    timeout_ms = 100;
+    while ((I2C_MASTER_EVENT_RX_COMPLETE != g_i2c_callback_event) && (I2C_MASTER_EVENT_ABORTED != g_i2c_callback_event) && timeout_ms)
+    {
+        R_BSP_SoftwareDelay(40, BSP_DELAY_UNITS_MILLISECONDS);
+        timeout_ms--;
+    }
+    if (I2C_MASTER_EVENT_RX_COMPLETE != g_i2c_callback_event) { return 0xFF;}
+
+    return read_val;
+}
+
+/* (audio_data_transfer, audio_data_calculate 함수는 이전과 동일) */
+static void audio_data_transfer(void)
+{
+    // 1. R_SSI_Write 함수의 반환값을 저장할 fsp_err_t 타입의 변수를 선언합니다.
+    fsp_err_t err;
+
+    // 2. R_SSI_Write 함수를 호출하고, 그 결과를 err 변수에 저장합니다.
+    err = R_SSI_Write(&g_i2s_ctrl, (uint8_t *)g_src_buff[g_buffer_index], sizeof(g_src_buff[0]));
+
+    // 3. err 변수의 값을 확인하여 성공/실패 여부를 RTT로 출력합니다.
     if (FSP_SUCCESS != err)
     {
-        APP_ERR_PRINT("\r\nR_SSI_Close API Failed\r\n");
+        // R_SSI_Write가 실패했을 경우에만 메시지를 출력합니다.
+        APP_PRINT("--> R_SSI_Write FAILED with error code: %u\r\n", err);
     }
-}
-
-/***********************************************************************************************************************
- *  @brief      This function is used to close GPT module.
- *  @param[IN]  None
- *  @retval     None
- **********************************************************************************************************************/
-static void deinit_gpt(void)
-{
-    fsp_err_t err = FSP_SUCCESS;
-    /* Close GPT module */
-    err = R_GPT_Close(&g_timer_ctrl);
-    /* Handle error */
-    if (FSP_SUCCESS != err)
+    else
     {
-        APP_ERR_PRINT("\r\nR_GPT_Close API Failed\r\n");
+        // 성공했을 경우에는 아무것도 출력하지 않습니다. (아래 '주의사항' 참고)
+        APP_PRINT("\r\nSUCCESS");
     }
+
+    // 4. 다음 전송을 위해 버퍼 인덱스를 교체하는 로직은 그대로 유지합니다.
+    g_buffer_index = !g_buffer_index;
+
+    audio_data_calculate(g_buffer_index);
 }
 
+static void audio_data_calculate(uint32_t buffer_index)
+{
+
+    static uint32_t t = 0U;
+
+    uint32_t samples_per_chunk = sizeof(g_src_buff[0]) / sizeof(int32_t);
+
+    for (uint32_t i = 0; i < samples_per_chunk / 2; i++)
+    {
+        // 1. 멜로디의 다음 음으로 넘어갈지 결정하는 부분 (이전과 동일)
+        if (g_samples_played_for_note >= g_samples_per_note)
+        {
+            g_samples_played_for_note = 0;
+            g_current_note_index++;
+            if (g_current_note_index >= g_total_notes_in_song)
+            {
+                g_current_note_index = 0;
+            }
+            // 다음 음으로 변경되었음을 RTT 로그로 출력
+            APP_PRINT("--> Note Changed to: %u Hz\r\n", g_song_melody[g_current_note_index]);
+
+            led_level = !led_level;
+            R_BSP_PinWrite(BSP_IO_PORT_06_PIN_00, led_level);
+        }
+    // 2. 현재 악보 순서에 맞는 주파수를 가져옵니다.
+            uint32_t current_freq = g_song_melody[g_current_note_index];
+
+            // 3. ✨ 사인(Sine) 함수를 이용해 해당 주파수의 샘플을 생성합니다. ✨
+            float input = (float)((2.0f * M_PI * current_freq * t) / (SAMPLE_RATE));
+            int16_t sample_16bit = (int16_t)(INT16_MAX * sinf(input));
+
+            // 4. 시간을 계속 흘려보냅니다.
+            t++;
+
+            // 5. 생성된 16비트 샘플을 32비트로 변환하여 버퍼에 저장합니다.
+            int32_t sample_32bit = (int32_t)(sample_16bit << 8);
+            g_src_buff[buffer_index][2 * i]     = sample_32bit;
+            g_src_buff[buffer_index][2 * i + 1] = sample_32bit;
+
+            // 6. 현재 음을 연주한 샘플 개수를 1 증가시킵니다.
+            g_samples_played_for_note++;
+        }
+//
+//        // 2. 현재 연주할 음의 주파수를 가져옵니다. (이전과 동일)
+//        uint32_t current_freq = g_song_melody[g_current_note_index];
+//
+//
+//        // 3. 현재 주파수의 한 주기(period)가 몇 개의 샘플로 이루어지는지 계산합니다.
+//        uint32_t period_in_samples = SAMPLE_RATE / current_freq;
+//
+//        // 4. 현재 시간(t)이 주기의 앞부분인지 뒷부분인지 확인합니다.
+//        //    (t를 주기로 나눈 나머지를 이용)
+//        if ((t % period_in_samples) < (period_in_samples / 2))
+//        {
+//            // 주기의 앞 절반 동안은 -> 최댓값
+//            sample_16bit = INT16_MAX;
+//        }
+//        else
+//        {
+//            // 주기의 뒤 절반 동안은 -> 최솟값
+//            sample_16bit = INT16_MIN;
+//        }
+//
+//
+//        // 5. 시간을 계속 흘려보냅니다.
+//        t++;
+//
+//        // 6. 생성된 16비트 샘플을 32비트로 변환하여 버퍼에 저장합니다. (이전과 동일)
+//        int32_t sample_32bit = (int32_t)(sample_16bit << 8);
+//        g_src_buff[buffer_index][2 * i]     = sample_32bit;
+//        g_src_buff[buffer_index][2 * i + 1] = sample_32bit;
+//
+//        // 7. 현재 음을 연주한 샘플 개수를 1 증가시킵니다. (이전과 동일)
+//        g_samples_played_for_note++;
+//    }
+
+
+
+
+
+
+
+//
+//
+//
+//        static uint32_t t = 0U;
+//    uint32_t freq = 440;
+//    uint32_t samples_per_chunk = sizeof(g_src_buff[0]) / sizeof(int32_t);
+//    for (uint32_t i = 0; i < samples_per_chunk / 2; i++){
+//        float input = (float)((2.0f * M_PI * freq * t) / (48000.0f));
+//        t++;
+//        int16_t sample_16bit = (int16_t)(INT16_MAX * sinf(input));
+//        int32_t sample_32bit = (int32_t)(sample_16bit << 8);
+//        g_src_buff[buffer_index][2 * i] = sample_32bit;
+//        g_src_buff[buffer_index][2 * i + 1] = sample_32bit;
+//    }
+
+}

@@ -130,6 +130,10 @@
         <peripheral name="SSIE0.CPU0" group="SSIE" security="s"/>
         <peripheral name="GPT2.CPU0" group="GPT" security="s"/>
         <peripheral name="IIC1.CPU0" group="IIC" security="s"/>
+        <peripheral name="ICU_EXT_IRQ.CPU0">
+            <slot name="ICU_EXT_IRQ13.CPU0" secure="true"/>
+            <slot name="ICU_EXT_IRQ12.CPU0" secure="true"/>
+        </peripheral>
         <peripheral name="ICU.CPU0">
             <slot name="IRQ0.CPU0" secure="true"/>
             <slot name="IRQ1.CPU0" secure="true"/>
@@ -138,6 +142,8 @@
             <slot name="IRQ4.CPU0" secure="true"/>
             <slot name="IRQ5.CPU0" secure="true"/>
             <slot name="IRQ6.CPU0" secure="true"/>
+            <slot name="IRQ7.CPU0" secure="true"/>
+            <slot name="IRQ8.CPU0" secure="true"/>
         </peripheral>
     </partition>
 </azone>

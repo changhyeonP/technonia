@@ -16,6 +16,7 @@ RM := rm -rf
 -include ra/fsp/src/r_ssi/subdir.mk
 -include ra/fsp/src/r_ioport/subdir.mk
 -include ra/fsp/src/r_iic_master/subdir.mk
+-include ra/fsp/src/r_icu/subdir.mk
 -include ra/fsp/src/r_gpt/subdir.mk
 -include ra/fsp/src/r_dtc/subdir.mk
 -include ra/fsp/src/bsp/mcu/ra8p1/subdir.mk
@@ -88,29 +89,29 @@ endif
 
 # Add inputs and outputs from these tool invocations to the build variables 
 OBJCOPY += \
-min_codec.hex \
+min_codec3.hex \
 
 SECONDARY_SIZE += \
-min_codec.siz \
+min_codec3.siz \
 
 
 # All Target
-all: min_codec.elf secondary-outputs
+all: min_codec3.elf secondary-outputs
 
 # Tool invocations
-min_codec.elf: $(OBJS) $(USER_OBJS) $(LIBRARY_GENERATOR_OUTPUTTYPE_OUTPUTS) $(LINKER_SCRIPT)
-	$(file > min_codec.elf.in,-mcpu=cortex-m85 -mthumb -mlittle-endian -mfloat-abi=hard -O2 -ffunction-sections -fdata-sections -fmessage-length=0 -funsigned-char -Wunused -Wuninitialized -Wall -Wextra -Wmissing-declarations -Wconversion -Wpointer-arith -Wshadow -Waggregate-return -Wno-parentheses-equality -Wfloat-equal -gdwarf-4 -g3 -o "min_codec.elf" $(OBJS) $(USER_OBJS) -T "fsp.lld" -L"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec/script" -L"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec\\Debug" -Wl,-Map=min_codec.map -Wl,--start-group -lcrt0 -lc++abi  -Wl,--end-group -Wl,--gc-sections -Wl,--cref -Wl,--icf=none -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec\\src" -I"." -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec\\ra\\fsp\\inc" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec\\ra\\fsp\\inc\\api" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec\\ra\\fsp\\inc\\instances" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec\\ra\\arm\\CMSIS_6\\CMSIS\\Core\\Include" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec\\ra_gen" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec\\ra_cfg\\fsp_cfg\\bsp" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec\\ra_cfg\\fsp_cfg")
-	@echo Building target: $@ && clang  --target=arm-none-eabi @"min_codec.elf.in"> min_codec.cref
-min_codec.hex: min_codec.elf
-	llvm-objcopy "min_codec.elf" -O ihex  "min_codec.hex"
-min_codec.siz: min_codec.elf
-	llvm-size --format=berkeley "min_codec.elf"
+min_codec3.elf: $(OBJS) $(USER_OBJS) $(LIBRARY_GENERATOR_OUTPUTTYPE_OUTPUTS) $(LINKER_SCRIPT)
+	$(file > min_codec3.elf.in,-mcpu=cortex-m85 -mthumb -mlittle-endian -mfloat-abi=hard -O2 -ffunction-sections -fdata-sections -fmessage-length=0 -funsigned-char -Wunused -Wuninitialized -Wall -Wextra -Wmissing-declarations -Wconversion -Wpointer-arith -Wshadow -Waggregate-return -Wno-parentheses-equality -Wfloat-equal -gdwarf-4 -g3 -o "min_codec3.elf" $(OBJS) $(USER_OBJS) -T "fsp.lld" -L"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3/script" -L"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3\\Debug" -Wl,-Map=min_codec3.map -Wl,--start-group -lcrt0 -lc++abi  -Wl,--end-group -Wl,--gc-sections -Wl,--cref -Wl,--icf=none -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3\\src" -I"." -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3\\ra\\fsp\\inc" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3\\ra\\fsp\\inc\\api" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3\\ra\\fsp\\inc\\instances" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3\\ra\\arm\\CMSIS_6\\CMSIS\\Core\\Include" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3\\ra_gen" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3\\ra_cfg\\fsp_cfg\\bsp" -I"C:\\Users\\qnfmd\\ra8p1_example\\ek_ra8p1\\min_codec3\\ra_cfg\\fsp_cfg")
+	@echo Building target: $@ && clang  --target=arm-none-eabi @"min_codec3.elf.in"> min_codec3.cref
+min_codec3.hex: min_codec3.elf
+	llvm-objcopy "min_codec3.elf" -O ihex  "min_codec3.hex"
+min_codec3.siz: min_codec3.elf
+	llvm-size --format=berkeley "min_codec3.elf"
 # Other Targets
 clean:
 	-$(file > clean_file.tmp,  $(JMP_DEPS)  $(FSY_DEPS)  $(C_UPPER_DEPS)  $(SECONDARY_SIZE)  $(SRC_UPPER_DEPS)  $(P_UPPER_DEPS)  $(S_DEPS)  $(PP_UPPER_DEPS)  $(P_DEPS)  $(FSY_UPPER_DEPS)  $(C_DEPS)  $(CREF)  $(SRC_DEPS)  $(OBJCOPY)  $(JMP_UPPER_DEPS)  $(PP_DEPS)  $(SX_DEPS)  $(ASM_UPPER_DEPS)  $(OBJS)  $(SX_UPPER_DEPS)  $(ASM_DEPS)  $(MAP)  $(S_UPPER_DEPS) )
 	-@ xargs -P 2 -s 32000 -t -a clean_file.tmp $(RM)
 	-@$(RM) clean_file.tmp
-	-$(RM)  min_codec.elf
+	-$(RM)  min_codec3.elf
 	-@echo ' '
 
 secondary-outputs: $(OBJCOPY) $(SECONDARY_SIZE)

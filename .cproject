@@ -231,6 +231,7 @@
 							<option id="com.renesas.cdt.managedbuild.llvm.core.option.warnings.otherFlags.307056660.1238994597" name="Other Flags" superClass="com.renesas.cdt.managedbuild.llvm.core.option.warnings.otherFlags.307056660"/>
 							<option id="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.family.726415388.32240606" name="ARM family" superClass="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.family.726415388"/>
 							<option id="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.fpu.837706911.1166029706" name="Float ABI" superClass="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.fpu.837706911"/>
+							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.renesas.cdt.managedbuild.llvm.core.targetPlatform" isAbstract="false" osList="all" superClass="com.renesas.cdt.managedbuild.llvm.core.targetPlatform"/>
 							<tool id="com.renesas.cdt.managedbuild.llvm.arm.tool.smsAsm.2060385616" name="SMS Assembler" superClass="com.renesas.cdt.managedbuild.llvm.arm.tool.smsAsm.666895504"/>
 							<tool id="com.renesas.cdt.managedbuild.llvm.arm.tool.libgen.2101164955" name="Library Generator" superClass="com.renesas.cdt.managedbuild.llvm.arm.tool.libgen.1305928180"/>
 							<tool id="com.renesas.cdt.managedbuild.llvm.arm.tool.compiler.587830537" name="Compiler" superClass="com.renesas.cdt.managedbuild.llvm.arm.tool.compiler.15191978">
@@ -265,7 +266,7 @@
 					<sourceEntries>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="ra"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="ra_gen"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="src"/>
+						<entry excluding="da7212.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="src"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -465,6 +466,7 @@
 							<option id="com.renesas.cdt.managedbuild.llvm.core.option.warnings.otherFlags.192732563.829688186" name="Other Flags" superClass="com.renesas.cdt.managedbuild.llvm.core.option.warnings.otherFlags.192732563"/>
 							<option id="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.family.1805621445.38853078" name="ARM family" superClass="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.family.1805621445"/>
 							<option id="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.fpu.563306331.1299998437" name="Float ABI" superClass="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.fpu.563306331"/>
+							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.renesas.cdt.managedbuild.llvm.core.targetPlatform" isAbstract="false" osList="all" superClass="com.renesas.cdt.managedbuild.llvm.core.targetPlatform"/>
 							<tool id="com.renesas.cdt.managedbuild.llvm.arm.tool.smsAsm.1737220236" name="SMS Assembler" superClass="com.renesas.cdt.managedbuild.llvm.arm.tool.smsAsm.1078434486"/>
 							<tool id="com.renesas.cdt.managedbuild.llvm.arm.tool.libgen.1130938709" name="Library Generator" superClass="com.renesas.cdt.managedbuild.llvm.arm.tool.libgen.1561029512"/>
 							<tool id="com.renesas.cdt.managedbuild.llvm.arm.tool.compiler.128405229" name="Compiler" superClass="com.renesas.cdt.managedbuild.llvm.arm.tool.compiler.1149134995">
@@ -499,7 +501,7 @@
 					<sourceEntries>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="ra"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="ra_gen"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="src"/>
+						<entry excluding="da7212.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="src"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -522,10 +524,10 @@
 	<storageModule moduleId="org.eclipse.cdt.make.core.buildtargets"/>
 	<storageModule moduleId="refreshScope" versionNumber="2">
 		<configuration configurationName="Debug">
-			<resource resourceType="PROJECT" workspacePath="/min_codec"/>
+			<resource resourceType="PROJECT" workspacePath="/min_codec3"/>
 		</configuration>
 		<configuration configurationName="Release">
-			<resource resourceType="PROJECT" workspacePath="/min_codec"/>
+			<resource resourceType="PROJECT" workspacePath="/min_codec3"/>
 		</configuration>
 	</storageModule>
 </cproject>

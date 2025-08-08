@@ -6,7 +6,7 @@
         #endif
 /* Number of interrupts allocated */
 #ifndef VECTOR_DATA_IRQ_COUNT
-#define VECTOR_DATA_IRQ_COUNT    (7)
+#define VECTOR_DATA_IRQ_COUNT    (9)
 #endif
 /* ISR prototypes */
 void ssi_txi_isr(void);
@@ -16,6 +16,7 @@ void iic_master_rxi_isr(void);
 void iic_master_txi_isr(void);
 void iic_master_tei_isr(void);
 void iic_master_eri_isr(void);
+void r_icu_isr(void);
 
 /* Vector table allocations */
 #define VECTOR_NUMBER_SSI0_TXI ((IRQn_Type) 0) /* SSI0 TXI (Transmit data empty) */
@@ -32,8 +33,12 @@ void iic_master_eri_isr(void);
 #define IIC1_TEI_IRQn          ((IRQn_Type) 5) /* IIC1 TEI (Transmit end) */
 #define VECTOR_NUMBER_IIC1_ERI ((IRQn_Type) 6) /* IIC1 ERI (Transfer error) */
 #define IIC1_ERI_IRQn          ((IRQn_Type) 6) /* IIC1 ERI (Transfer error) */
+#define VECTOR_NUMBER_ICU_IRQ13 ((IRQn_Type) 7) /* ICU IRQ13 (External pin interrupt 13) */
+#define ICU_IRQ13_IRQn          ((IRQn_Type) 7) /* ICU IRQ13 (External pin interrupt 13) */
+#define VECTOR_NUMBER_ICU_IRQ12 ((IRQn_Type) 8) /* ICU IRQ12 (External pin interrupt 12) */
+#define ICU_IRQ12_IRQn          ((IRQn_Type) 8) /* ICU IRQ12 (External pin interrupt 12) */
 /* The number of entries required for the ICU vector table. */
-#define BSP_ICU_VECTOR_NUM_ENTRIES (7)
+#define BSP_ICU_VECTOR_NUM_ENTRIES (9)
 
 #ifdef __cplusplus
         }
